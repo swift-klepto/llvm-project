@@ -159,6 +159,8 @@ def UseExperimentalZeroingPseudos
     : Predicate<"Subtarget->useExperimentalZeroingPseudos()">;
 def UseAlternateSExtLoadCVTF32
     : Predicate<"Subtarget->useAlternateSExtLoadCVTF32Pattern()">;
+def IsReadTPHard     : Predicate<"!Subtarget->IsReadTPSoft()">;
+def IsReadTPSoft     : Predicate<"Subtarget->IsReadTPSoft()">;
 
 def UseNegativeImmediates
     : Predicate<"false">, AssemblerPredicate<(all_of (not FeatureNoNegativeImmediates)),
@@ -1186,7 +1188,18 @@ def MSRpstateImm4 : MSRpstateImm0_15;
 // The thread pointer (on Linux, at least, where this has been implemented) is
 // TPIDR_EL0.
 def MOVbaseTLS : Pseudo<(outs GPR64:$dst), (ins),
-                       [(set GPR64:$dst, AArch64threadpointer)]>, Sched<[WriteSys]>;
+                       [(set GPR64:$dst, AArch64threadpointer)]>, Sched<[WriteSys]>,
+                       Requires<[IsReadTPHard]>;
+
+// __aarch64_read_tp preserves the registers x1-x7.
+// This is a pseudo inst so that we can get the encoding right,
+// complete with fixup for the aarch64_read_tp function.
+let isCall = 1,
+  Defs = [X0, X16, X17, LR], Uses = [SP] in {
+  def GETbaseTLSsoft :  Pseudo<(outs), (ins),
+               [(set X0, AArch64threadpointer)]>, Sched<[WriteBr]>,
+               Requires<[IsReadTPSoft]>;
+}
 
 let Uses = [ X9 ], Defs = [ X16, X17, LR, NZCV ] in {
 def HWASAN_CHECK_MEMACCESS : Pseudo<

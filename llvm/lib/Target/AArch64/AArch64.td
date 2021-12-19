@@ -407,6 +407,10 @@ def FeatureEnhancedCounterVirtualization :
       SubtargetFeature<"ecv", "HasEnhancedCounterVirtualization",
       "true", "Enable enhanced counter virtualization extension">;
 
+// The way of reading thread pointer
+def FeatureReadTp : SubtargetFeature<"read-tp-soft", "ReadTpSoft",
+    "true", "Read thread pointer from __aarch64_read_tp" >;
+
 //===----------------------------------------------------------------------===//
 // Architectures.
 //

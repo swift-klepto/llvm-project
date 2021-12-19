@@ -959,6 +959,16 @@ bool AArch64ExpandPseudo::expandMI(MachineBasicBlock &MBB,
     return true;
   }
 
+  case AArch64::GETbaseTLSsoft: {
+    MachineInstrBuilder MIB =
+        BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(AArch64::BL))
+            .addExternalSymbol("__aarch64_read_tp")
+            .cloneMemRefs(MI);
+    transferImpOps(MI, MIB, MIB);
+    MI.eraseFromParent();
+    return true;
+  }
+
   case AArch64::MOVi32imm:
     return expandMOVImm(MBB, MBBI, 32);
   case AArch64::MOVi64imm:

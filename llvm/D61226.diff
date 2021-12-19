@@ -1,0 +1,121 @@
+Index: lib/Target/AArch64/AArch64.td
+===================================================================
+--- lib/Target/AArch64/AArch64.td
++++ lib/Target/AArch64/AArch64.td
+@@ -330,6 +330,10 @@
+ def FeatureMTE : SubtargetFeature<"mte", "HasMTE",
+     "true", "Enable Memory Tagging Extension" >;
+ 
++// The way of reading thread pointer
++def FeatureReadTp : SubtargetFeature<"read-tp-soft", "ReadTpSoft",
++    "true", "Read thread pointer from __aarch64_read_tp" >;
++
+ //===----------------------------------------------------------------------===//
+ // Architectures.
+ //
+Index: lib/Target/AArch64/AArch64ExpandPseudoInsts.cpp
+===================================================================
+--- lib/Target/AArch64/AArch64ExpandPseudoInsts.cpp
++++ lib/Target/AArch64/AArch64ExpandPseudoInsts.cpp
+@@ -517,6 +517,18 @@
+     return true;
+   }
+ 
++  case AArch64::GETbaseTLSsoft: {
++    unsigned DstReg = MI.getOperand(0).getReg();
++    MachineInstrBuilder MIB =
++        BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(AArch64::BL))
++            .addExternalSymbol("__aarch64_read_tp")
++            .addReg(DstReg, RegState::Dead)
++            .cloneMemRefs(MI);
++    transferImpOps(MI, MIB, MIB);
++    MI.eraseFromParent();
++    return true;
++  }
++
+   case AArch64::MOVi32imm:
+     return expandMOVImm(MBB, MBBI, 32);
+   case AArch64::MOVi64imm:
+Index: lib/Target/AArch64/AArch64InstrInfo.td
+===================================================================
+--- lib/Target/AArch64/AArch64InstrInfo.td
++++ lib/Target/AArch64/AArch64InstrInfo.td
+@@ -127,6 +127,8 @@
+ def IsBE             : Predicate<"!Subtarget->isLittleEndian()">;
+ def UseAlternateSExtLoadCVTF32
+     : Predicate<"Subtarget->useAlternateSExtLoadCVTF32Pattern()">;
++def IsReadTPHard     : Predicate<"!Subtarget->IsReadTPSoft()">;
++def IsReadTPSoft     : Predicate<"Subtarget->IsReadTPSoft()">;
+ 
+ def UseNegativeImmediates
+     : Predicate<"false">, AssemblerPredicate<"!FeatureNoNegativeImmediates",
+@@ -761,7 +763,18 @@
+ // The thread pointer (on Linux, at least, where this has been implemented) is
+ // TPIDR_EL0.
+ def MOVbaseTLS : Pseudo<(outs GPR64:$dst), (ins),
+-                       [(set GPR64:$dst, AArch64threadpointer)]>, Sched<[WriteSys]>;
++                       [(set GPR64:$dst, AArch64threadpointer)]>, Sched<[WriteSys]>,
++                       Requires<[IsReadTPHard]>;
++
++// __aarch64_read_tp preserves the registers x1-x7.
++// This is a pseudo inst so that we can get the encoding right,
++// complete with fixup for the aarch64_read_tp function.
++let isCall = 1,
++  Defs = [X0, X16, X17, LR], Uses = [SP] in {
++  def GETbaseTLSsoft :  Pseudo<(outs), (ins),
++               [(set X0, AArch64threadpointer)]>, Sched<[WriteBr]>,
++               Requires<[IsReadTPSoft]>;
++}
+ 
+ let Uses = [ X9 ], Defs = [ X16, X17, LR, NZCV ] in {
+ def HWASAN_CHECK_MEMACCESS : Pseudo<
+Index: lib/Target/AArch64/AArch64Subtarget.h
+===================================================================
+--- lib/Target/AArch64/AArch64Subtarget.h
++++ lib/Target/AArch64/AArch64Subtarget.h
+@@ -134,6 +134,9 @@
+   bool HasRandGen = false;
+   bool HasMTE = false;
+ 
++  // If true, read thread pointer from __aarch64_read_tp.
++  bool ReadTpSoft = false;
++
+   // HasZeroCycleRegMove - Has zero-cycle register mov instructions.
+   bool HasZeroCycleRegMove = false;
+ 
+@@ -373,6 +376,8 @@
+   bool hasRandGen() const { return HasRandGen; }
+   bool hasMTE() const { return HasMTE; }
+ 
++  bool IsReadTPSoft() const { return ReadTpSoft; }
++
+   bool isLittleEndian() const { return IsLittle; }
+ 
+   bool isTargetDarwin() const { return TargetTriple.isOSDarwin(); }
+Index: test/CodeGen/AArch64/readtp.ll
+===================================================================
+--- /dev/null
++++ test/CodeGen/AArch64/readtp.ll
+@@ -0,0 +1,22 @@
++; RUN: llc -mtriple=arm64-none-linux-gnu -O2 -mattr=+read-tp-soft %s -o - | FileCheck %s -check-prefix=CHECK-SOFT
++; RUN: llc -mtriple=arm64-none-linux-gnu -O2 %s -o - | FileCheck %s -check-prefix=CHECK-HARD
++
++
++; __thread int counter;
++;  void foo() {
++;    counter = 5;
++;  }
++
++
++@counter = thread_local local_unnamed_addr global i32 0, align 4
++
++define void @foo() local_unnamed_addr #0 {
++entry:
++  store i32 5, i32* @counter, align 4
++  ret void
++}
++
++
++; CHECK-LABEL: foo:
++; CHECK-SOFT:    bl	__aarch64_read_tp
++; CHECK-HARD:    mrs	{{x[0-9]+}}, TPIDR_EL0
